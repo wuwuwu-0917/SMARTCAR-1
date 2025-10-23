@@ -18,6 +18,20 @@
 #define RGB565_WHITE 0xFFFF  // 白色
 #define RGB565_BLACK 0x0000  // 黑色
 
+// 十字路口相关全局变量
+CROSS_STATE cross_state = CROSS_NONE;
+CROSS_TYPE cross_type = CROSS_TYPE_NONE;
+uint8 cross_detected = 0;
+uint8 cross_timer = 0;
+uint8 cross_enter_count = 0;
+uint8 cross_exit_count = 0;
+uint8 cross_center_x = 0;
+uint8 cross_center_y = 0;
+
+// 用于十字补线的边界数组
+uint8 cross_l_border[IMAGE_HEIGHT];
+uint8 cross_r_border[IMAGE_HEIGHT];
+
 /*
 函数名称：int my_abs(int value)
 功能说明：求绝对值
@@ -537,7 +551,7 @@ void calculate_deviation(void)
 参数说明：无
 函数返回：无
  */
-void track_process(void)
+void track_process_circle(void)
 {
     uint16 i;
     uint8 hightest = 0; // 定义一个最高行，tip：这里的最高指的是y值的最小
@@ -858,4 +872,331 @@ void track_process_with_circle(void)
 
     // 根据环岛状态进行处理
     circle_process();
+}
+
+/**
+ * @brief 检测十字路口
+ * @return uint8 1表示检测到十字路口，0表示未检测到
+ */
+uint8 detect_crossroad(void)
+{
+    uint8 i, j;
+    uint8 white_pixel_count = 0;
+    uint8 cross_feature_count = 0;
+    
+    // 方法1: 检测图像中上部区域的白色像素密度
+    for (i = 5; i < 30; i++) {
+        for (j = 10; j < IMAGE_WIDTH - 10; j++) {
+            if (bin_image[i][j] == 255) {
+                white_pixel_count++;
+            }
+        }
+    }
+    
+    // 方法2: 检测边界特征 - 左右边界同时向外扩展
+    uint8 left_extend = 0, right_extend = 0;
+    for (i = IMAGE_HEIGHT - 10; i < IMAGE_HEIGHT - 1; i++) {
+        if (l_border[i] < 20 && l_border[i] > border_min) {
+            left_extend++;
+        }
+        if (r_border[i] > IMAGE_WIDTH - 20 && r_border[i] < border_max) {
+            right_extend++;
+        }
+    }
+    
+    // 方法3: 检测中线在顶部区域的连续性
+    uint8 center_line_break = 0;
+    for (i = 5; i < 25; i++) {
+        if (center_line[i] < IMAGE_WIDTH/2 - 10 || center_line[i] > IMAGE_WIDTH/2 + 10) {
+            center_line_break++;
+        }
+    }
+    
+    // 综合判断条件
+    if ((white_pixel_count > 800) || 
+        (left_extend > 5 && right_extend > 5) ||
+        (center_line_break < 5)) {
+        cross_enter_count++;
+        if (cross_enter_count > 3) {
+            return 1;
+        }
+    } else {
+        cross_enter_count = 0;
+    }
+    
+    return 0;
+}
+
+/**
+ * @brief 识别十字路口类型
+ * @return CROSS_TYPE 十字路口类型
+ */
+CROSS_TYPE identify_cross_type(void)
+{
+    uint8 i;
+    uint8 left_break = 0, right_break = 0;
+    
+    // 检测左右边界的连续性
+    for (i = IMAGE_HEIGHT/2; i < IMAGE_HEIGHT - 5; i++) {
+        if (l_border[i] <= border_min + 5) {
+            left_break++;
+        }
+        if (r_border[i] >= border_max - 5) {
+            right_break++;
+        }
+    }
+    
+    // 判断十字类型
+    if (left_break > 3 && right_break > 3) {
+        return CROSS_TYPE_NORMAL;  // 普通十字，两边都有延伸
+    } else if (left_break > 3 || right_break > 3) {
+        return CROSS_TYPE_T;       // T型十字，只有一边有延伸
+    }
+    
+    return CROSS_TYPE_NORMAL;      // 默认为普通十字
+}
+
+/**
+ * @brief 十字路口补线处理
+ */
+void crossroad_line_complement(void)
+{
+    uint8 i;
+    float left_slope = 0, right_slope = 0;
+    float left_intercept = 0, right_intercept = 0;
+    
+    // 保存原始边界
+    memcpy(cross_l_border, l_border, IMAGE_HEIGHT);
+    memcpy(cross_r_border, r_border, IMAGE_HEIGHT);
+    
+    // 根据十字类型采用不同的补线策略
+    switch (cross_type) {
+        case CROSS_TYPE_NORMAL:
+            // 普通十字 - 延长左右边界
+            for (i = 0; i < IMAGE_HEIGHT; i++) {
+                if (l_border[i] > border_min && l_border[i] < IMAGE_WIDTH/2 - 20) {
+                    l_border[i] = border_min + 5;  // 左边界向左扩展
+                }
+                if (r_border[i] < border_max && r_border[i] > IMAGE_WIDTH/2 + 20) {
+                    r_border[i] = border_max - 5;  // 右边界向右扩展
+                }
+            }
+            break;
+            
+        case CROSS_TYPE_T:
+            // T型十字 - 根据缺失的边界进行补线
+            if (cross_center_x < IMAGE_WIDTH/2) {
+                // 左边缺失，向右补线
+                for (i = 0; i < IMAGE_HEIGHT; i++) {
+                    if (l_border[i] <= border_min) {
+                        l_border[i] = cross_center_x - 30;
+                    }
+                }
+            } else {
+                // 右边缺失，向左补线
+                for (i = 0; i < IMAGE_HEIGHT; i++) {
+                    if (r_border[i] >= border_max) {
+                        r_border[i] = cross_center_x + 30;
+                    }
+                }
+            }
+            break;
+            
+        default:
+            break;
+    }
+    
+    // 重新计算中线
+    for (i = 0; i < IMAGE_HEIGHT; i++) {
+        if (l_border[i] > border_min && r_border[i] < border_max) {
+            center_line[i] = (l_border[i] + r_border[i]) >> 1;
+        }
+    }
+}
+
+/**
+ * @brief 十字路口控制策略
+ */
+void crossroad_control_strategy(void)
+{
+    switch (cross_state) {
+        case CROSS_DETECTED:
+            // 检测到十字路口，减速并准备直行
+            Target_Speed_Control(40, 40);
+            break;
+            
+        case CROSS_ON_TRACK:
+            // 在十字路口内，保持直行
+            if (cross_type == CROSS_TYPE_NORMAL) {
+                Target_Speed_Control(50, 50);  // 普通十字稍快
+            } else {
+                Target_Speed_Control(45, 45);  // T型十字稍慢
+            }
+            break;
+            
+        case CROSS_EXIT:
+            // 离开十字路口，加速恢复
+            Target_Speed_Control(55, 55);
+            break;
+            
+        default:
+            // 正常巡线速度
+            break;
+    }
+}
+
+/**
+ * @brief 十字路口处理主函数
+ */
+void crossroad_process(void)
+{
+    static uint8 cross_process_timer = 0;
+    
+    switch (cross_state) {
+        case CROSS_NONE:
+            // 检测十字路口
+            if (detect_crossroad()) {
+                cross_state = CROSS_DETECTED;
+                cross_type = identify_cross_type();
+                cross_timer = 0;
+                // 计算十字中心点
+                cross_center_x = center_line[IMAGE_HEIGHT/2];
+                cross_center_y = IMAGE_HEIGHT/2;
+            }
+            break;
+            
+        case CROSS_DETECTED:
+            cross_timer++;
+            if (cross_timer > 20) {  // 确认进入十字路口
+                cross_state = CROSS_ON_TRACK;
+                cross_timer = 0;
+                // 执行补线
+                crossroad_line_complement();
+            }
+            break;
+            
+        case CROSS_ON_TRACK:
+            cross_timer++;
+            // 在十字路口内行驶一段时间
+            if (cross_timer > 80) {  // 根据实际情况调整时间
+                cross_state = CROSS_EXIT;
+                cross_timer = 0;
+            }
+            break;
+            
+        case CROSS_EXIT:
+            cross_timer++;
+            if (cross_timer > 50) {  // 确认离开十字路口
+                cross_state = CROSS_NONE;
+                cross_timer = 0;
+                cross_enter_count = 0;
+                // 恢复原始边界
+                memcpy(l_border, cross_l_border, IMAGE_HEIGHT);
+                memcpy(r_border, cross_r_border, IMAGE_HEIGHT);
+            }
+            break;
+    }
+    
+    // 应用控制策略
+    crossroad_control_strategy();
+}
+
+/*
+函数名称：void track_process(void)
+功能说明：巡线处理主函数
+参数说明：无
+函数返回：无
+其他说明：与前面的track_process_circle思想与内容基本一致，主要是对环岛的处理改为了对十字的处理,后续可以尝试把一样的部分写为一个函数
+ */
+void track_process_cross(void)                     
+{
+    uint16 i;
+    uint8 hightest = 0; // 定义一个最高行，这里的最高指的是y值的最小
+
+    // 滤波和预处理
+    image_filter(bin_image);
+    image_draw_rectan(bin_image);
+    // 清零计数
+    data_stastics_l = 0;
+    data_stastics_r = 0;
+
+    if (get_start_point(IMAGE_HEIGHT - 2)) // 找到起点，再执行八领域，没找到就一直找
+    {
+        // printf("正在开始八领域\n");
+        search_l_r((uint16)USE_num, bin_image, &data_stastics_l, &data_stastics_r, start_point_l[0],
+                   start_point_l[1], start_point_r[0], start_point_r[1], &hightest);
+        // printf("八邻域已结束\n");
+
+        // 从爬取的边界线内提取边线，这个才是最终有用的边线
+        get_left(data_statics_l);
+        get_right(data_statics_r);
+
+        // 执行十字补线处理
+        cross_fill(bin_image, l_border, r_border, data_statics_l, data_statics_r, dir_l, dir_r, points_l, points_r);
+
+        // 计算中线
+        for (i = hightest; i < IMAGE_HEIGHT - 1; i++)
+        {
+            if (l_border[i] > border_min && r_border[i] < border_max)
+            {
+                center_line[i] = (l_border[i] + r_border[i]) >> 1; // 求中线
+            }
+        }
+    }
+    else
+    {
+        // 未找到起点
+        line_detected = 0;
+        track_deviation = 0;
+    }
+    // 计算路径偏差
+    calculate_deviation();
+    
+    // 执行十字路口处理
+    crossroad_process();
+    
+    // 应用舵机控制（集成PID控制）
+    pid_steer_control();
+
+    // 显示处理后的图像
+    tft180_displayimage03x((const uint8 *)bin_image, 160, 128);
+
+    for (uint16 i = 0; i < data_stastics_l; i++)
+    {
+        // 使用与tft180_show_gray_image相同的坐标缩放逻辑，确保与二值化图像显示对齐
+        uint16 x = limit_a_b(((points_l[i][0] + 2) * 160) / 188, 0, 159);
+        uint16 y = limit_a_b((points_l[i][1] * 128) / 120, 0, 127);
+        tft180_draw_point(x, y, RGB565_BLUE); // 显示左边起点
+    }
+    for (i = 0; i < data_stastics_r; i++)
+    {
+        // 使用与tft180_show_gray_image相同的坐标缩放逻辑，确保与二值化图像显示对齐
+        uint16 x = limit_a_b(((points_r[i][0] - 2) * 160) / 188, 0, 159);
+        uint16 y = limit_a_b((points_r[i][1] * 128) / 120, 0, 127);
+        tft180_draw_point(x, y, RGB565_RED); // 显示右边起点
+    }
+
+    // 显示中线和左右边界，限制在显示屏高度范围内(0-127)
+    for (i = hightest; i < 128; i++)
+    {
+        center_line[i] = (l_border[i] + r_border[i]) >> 1; // 求中线
+
+        // 使用与tft180_show_gray_image相同的坐标缩放逻辑，确保与二值化图像显示对齐
+        // 注意：原始图像大小为188×120，显示大小为160×128
+        uint16 center_x = limit_a_b((center_line[i] * 160) / 188, 0, 159);
+        uint16 l_x = limit_a_b((l_border[i] * 160) / 188, 0, 159);
+        uint16 r_x = limit_a_b((r_border[i] * 160) / 188, 0, 159);
+        uint16 y = limit_a_b((i * 128) / 120, 0, 127);
+        // 根据十字状态设置中线颜色
+        if (cross_state != CROSS_TYPE_NONE)
+        {
+            tft180_draw_point(center_x, y, RGB565_PURPLE); // 十字内显示紫色中线
+        }
+        else
+        {
+            tft180_draw_point(center_x, y, RGB565_CYAN); // 非十字显示青色中线
+        }
+        tft180_draw_point(l_x, y, RGB565_GREEN); // 显示左边线
+        tft180_draw_point(r_x, y, RGB565_GREEN); // 显示右边线
+    }
 }
