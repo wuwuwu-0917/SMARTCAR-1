@@ -72,4 +72,34 @@ extern uint8 detect_circle_exit(void);       // 检测环岛出口
 extern void circle_process(void);            // 环岛处理主函数
 extern void track_process_with_circle(void); // 带环岛处理的巡线函数
 
+// 十字路口状态枚举
+typedef enum {
+    CROSS_NONE = 0,      // 无十字
+    CROSS_DETECTED,      // 检测到十字
+    CROSS_ON_TRACK,      // 在十字路口内
+    CROSS_EXIT           // 离开十字路口
+} CROSS_STATE;
+
+// 十字路口类型
+typedef enum {
+    CROSS_TYPE_NONE = 0, // 无十字
+    CROSS_TYPE_NORMAL,   // 普通十字
+    CROSS_TYPE_T         // T型十字
+} CROSS_TYPE;
+
+// 有关十字的函数声明
+uint8 detect_crossroad(void);
+CROSS_TYPE identify_cross_type(void);
+void crossroad_line_complement(void);
+void crossroad_process(void);
+void crossroad_control_strategy(void);
+
+//有关十字的全局变量声明
+extern CROSS_STATE cross_state;
+extern CROSS_TYPE cross_type;
+extern uint8 cross_detected;
+extern uint8 cross_timer;
+extern uint8 cross_enter_count;
+extern uint8 cross_exit_count;
+
 #endif /*_TRACK_H_*/
