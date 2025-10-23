@@ -20,4 +20,9 @@ extern float target_left;
 extern float target_right;
 extern float target_angle;
 extern uint8_t bin_image;
+
+//下为一些需要添加的宏定义
+// #define CROSS_ENTRY_THRESHOLD 3
+// #define CROSS_EXIT_THRESHOLD 5
+// #define CROSS_WIDTH_THRESHOLD 80
 #endif
